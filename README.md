@@ -113,8 +113,6 @@ runs/
 artifacts/
   analysis/
   submission_manifest.json
-report/
-  ECS795P_Report_Latex_Template/
 ```
 
 ## Report Skeleton
