@@ -1,0 +1,53 @@
+experiment:
+  name: baseline_unet3d
+  seed: 13
+  out_dir: runs/baseline_unet3d
+
+data:
+  modalities: [t1, ir, flair]
+  target: coarse
+  num_classes: 4
+  ignore_index: 255
+  ignore_hindbrain_in_coarse: true
+  cache_subjects: true
+  intensity_clip_percentiles: [1.0, 99.0]
+
+model:
+  name: unet3d
+  in_channels: 3
+  out_channels: 4
+  base_channels: 16
+  levels: 4
+  norm: instance
+  dropout: 0.05
+  deep_supervision: false
+
+training:
+  epochs: 180
+  batch_size: 2
+  samples_per_epoch: 512
+  patch_size: [32, 96, 96]
+  foreground_patch_ratio: 0.66
+  lr: 0.0003
+  weight_decay: 0.0001
+  loss: dice
+  dice_weight: 1.0
+  ce_weight: 0.0
+  amp: true
+  num_workers: 2
+  val_interval: 5
+  save_every: 25
+
+augmentation:
+  enabled: false
+  flip_probability: 0.0
+  intensity_probability: 0.0
+  noise_std: 0.0
+  gamma_range: [1.0, 1.0]
+
+inference:
+  roi_size: [32, 96, 96]
+  sw_batch_size: 2
+  overlap: 0.5
+  tta_flips: []
+
