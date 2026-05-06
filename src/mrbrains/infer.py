@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Iterable, List, Optional, Sequence, Union
 
 import numpy as np
@@ -17,11 +18,16 @@ def _compute_starts(size: int, roi: int, overlap: float) -> List[int]:
     return starts
 
 
-def _gaussian_weight(roi_size: Sequence[int], device: torch.device) -> torch.Tensor:
+def _gaussian_weight(roi_size: Sequence[int], sigma_scale: float, device: torch.device) -> torch.Tensor:
+    """Per-patch importance weighting for sliding-window blending.
+
+    `sigma_scale` is in units of half-ROI; smaller values produce a sharper
+    centre weighting (less blending at borders). Default 0.125 matches MONAI.
+    """
     coords = [torch.linspace(-1, 1, steps=int(s), device=device) for s in roi_size]
     zz, yy, xx = torch.meshgrid(coords[0], coords[1], coords[2], indexing="ij")
     dist = zz**2 + yy**2 + xx**2
-    weight = torch.exp(-dist / 0.5).clamp_min(1e-3)
+    weight = torch.exp(-dist / (2.0 * (sigma_scale**2 + 1e-8))).clamp_min(1e-3)
     return weight.unsqueeze(0).unsqueeze(0)
 
 
@@ -31,9 +37,18 @@ def _first_output(output: Union[torch.Tensor, Sequence[torch.Tensor]]) -> torch.
     return output[0]
 
 
-def _predict_batch(model: torch.nn.Module, batch: torch.Tensor) -> torch.Tensor:
-    logits = _first_output(model(batch))
-    return torch.softmax(logits, dim=1)
+def _amp_context(use_amp: bool, device: torch.device):
+    if not (use_amp and device.type == "cuda"):
+        return nullcontext()
+    if hasattr(torch, "amp"):
+        return torch.amp.autocast(device_type="cuda", enabled=True)
+    return torch.cuda.amp.autocast(enabled=True)
+
+
+def _predict_batch(model: torch.nn.Module, batch: torch.Tensor, use_amp: bool) -> torch.Tensor:
+    with _amp_context(use_amp, batch.device):
+        logits = _first_output(model(batch))
+    return torch.softmax(logits.float(), dim=1)
 
 
 def sliding_window_predict(
@@ -44,6 +59,8 @@ def sliding_window_predict(
     device: torch.device,
     sw_batch_size: int = 2,
     overlap: float = 0.5,
+    gaussian_sigma_scale: float = 0.125,
+    use_amp: bool = True,
 ) -> torch.Tensor:
     """Return class probabilities for a full volume.
 
@@ -67,11 +84,23 @@ def sliding_window_predict(
     starts_w = _compute_starts(pw, roi[2], overlap)
     probs = torch.zeros((num_classes, pd, ph, pw), dtype=torch.float32, device=device)
     norm = torch.zeros((1, pd, ph, pw), dtype=torch.float32, device=device)
-    weight = _gaussian_weight(roi, device)
+    weight = _gaussian_weight(roi, gaussian_sigma_scale, device)
 
     patches: List[torch.Tensor] = []
     locations: List[tuple[int, int, int]] = []
     padded = padded.to(device)
+
+    def _flush() -> None:
+        if not patches:
+            return
+        batch = torch.stack(patches, dim=0)
+        batch_probs = _predict_batch(model, batch, use_amp)
+        for p, loc in zip(batch_probs, locations):
+            ld, lh, lw = loc
+            probs[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += p * weight.squeeze(0)
+            norm[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += weight.squeeze(0)
+        patches.clear()
+        locations.clear()
 
     with torch.no_grad():
         for sd in starts_d:
@@ -81,21 +110,8 @@ def sliding_window_predict(
                     patches.append(patch)
                     locations.append((sd, sh, sw))
                     if len(patches) == sw_batch_size:
-                        batch = torch.stack(patches, dim=0)
-                        batch_probs = _predict_batch(model, batch)
-                        for p, loc in zip(batch_probs, locations):
-                            ld, lh, lw = loc
-                            probs[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += p * weight.squeeze(0)
-                            norm[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += weight.squeeze(0)
-                        patches.clear()
-                        locations.clear()
-        if patches:
-            batch = torch.stack(patches, dim=0)
-            batch_probs = _predict_batch(model, batch)
-            for p, loc in zip(batch_probs, locations):
-                ld, lh, lw = loc
-                probs[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += p * weight.squeeze(0)
-                norm[:, ld : ld + roi[0], lh : lh + roi[1], lw : lw + roi[2]] += weight.squeeze(0)
+                        _flush()
+        _flush()
 
     probs = probs / norm.clamp_min(1e-6)
     return probs[:, :d, :h, :w].cpu()
@@ -110,12 +126,18 @@ def predict_with_tta(
     sw_batch_size: int = 2,
     overlap: float = 0.5,
     tta_flips: Optional[Iterable[Sequence[int]]] = None,
+    gaussian_sigma_scale: float = 0.125,
+    use_amp: bool = True,
 ) -> torch.Tensor:
-    probs = sliding_window_predict(model, image, roi_size, num_classes, device, sw_batch_size, overlap)
+    probs = sliding_window_predict(
+        model, image, roi_size, num_classes, device, sw_batch_size, overlap, gaussian_sigma_scale, use_amp
+    )
     flips = list(tta_flips or [])
     for axes in flips:
-        axes = tuple(int(a) for a in axes)
-        flipped_image = torch.flip(image, dims=axes)
-        flipped_probs = sliding_window_predict(model, flipped_image, roi_size, num_classes, device, sw_batch_size, overlap)
-        probs = probs + torch.flip(flipped_probs, dims=axes)
+        axes_t = tuple(int(a) for a in axes)
+        flipped_image = torch.flip(image, dims=axes_t)
+        flipped_probs = sliding_window_predict(
+            model, flipped_image, roi_size, num_classes, device, sw_batch_size, overlap, gaussian_sigma_scale, use_amp
+        )
+        probs = probs + torch.flip(flipped_probs, dims=axes_t)
     return probs / (1 + len(flips))

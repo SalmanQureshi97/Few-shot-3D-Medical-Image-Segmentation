@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,12 @@ def robust_normalise(
     clip_percentiles: Sequence[float] = (1.0, 99.0),
     eps: float = 1e-6,
 ) -> np.ndarray:
+    """Per-modality robust z-score: clip to foreground percentiles, then standardise.
+
+    Z-scoring on the foreground (non-air) voxels avoids the air peak dominating
+    statistics, which is a known issue for MR scans. The clip percentiles
+    suppress hyper-intense outliers (e.g. metal artifacts, fat shifts).
+    """
     values = volume[foreground]
     if values.size < 32:
         values = volume.reshape(-1)
@@ -46,6 +53,7 @@ def load_subject(
     ignore_index: int = 255,
     ignore_hindbrain_in_coarse: bool = True,
     clip_percentiles: Sequence[float] = (1.0, 99.0),
+    ignore_hindbrain_in_detailed: bool = False,
 ) -> LoadedSubject:
     images = []
     first_meta: Optional[VolumeMeta] = None
@@ -72,7 +80,13 @@ def load_subject(
     if subject.label_path is not None:
         label_xyz, _ = load_volume(subject.label_path)
         label = to_dhw(label_xyz).astype(np.int64)
-        label = remap_labels(label, target, ignore_index, ignore_hindbrain_in_coarse)
+        label = remap_labels(
+            label,
+            target,
+            ignore_index,
+            ignore_hindbrain_in_coarse,
+            ignore_hindbrain_in_detailed,
+        )
 
     spacing_xyz = first_meta.spacing
     spacing_dhw = (spacing_xyz[2], spacing_xyz[1], spacing_xyz[0])
@@ -83,6 +97,59 @@ def load_subject(
         meta=first_meta,
         spacing_dhw=spacing_dhw,
     )
+
+
+def cached_loaded_subjects(
+    subjects: Iterable[Subject],
+    modalities: Iterable[str],
+    target: str,
+    ignore_index: int,
+    ignore_hindbrain_in_coarse: bool,
+    clip_percentiles: Sequence[float],
+    cache_dir: Optional[Path] = None,
+    ignore_hindbrain_in_detailed: bool = False,
+) -> List[LoadedSubject]:
+    """Load subjects, optionally caching the normalised volumes to .npz on disk.
+
+    Useful in LOOCV where the same five subjects are loaded ten times — disk
+    caching converts that into a single decode + zscore pass.
+    """
+    modalities = list(modalities)
+    out: List[LoadedSubject] = []
+    for subject in subjects:
+        cache_path: Optional[Path] = None
+        if cache_dir is not None:
+            tag = f"{subject.subject_id}__{target}__" + "-".join(modalities)
+            cache_path = Path(cache_dir) / f"{tag}.npz"
+        if cache_path is not None and cache_path.exists():
+            with np.load(cache_path, allow_pickle=False) as data:
+                image = data["image"].astype(np.float32)
+                label = data["label"].astype(np.int64) if "label" in data.files else None
+                spacing = tuple(float(v) for v in data["spacing_dhw"])
+            # We still need a VolumeMeta — load just the affine from the first modality.
+            _, meta = load_volume(subject.image_paths[modalities[0]])
+            out.append(LoadedSubject(subject.subject_id, image, label, meta, spacing))
+            continue
+        loaded = load_subject(
+            subject,
+            modalities,
+            target,
+            ignore_index,
+            ignore_hindbrain_in_coarse,
+            clip_percentiles,
+            ignore_hindbrain_in_detailed,
+        )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload: Dict[str, np.ndarray] = {
+                "image": loaded.image.astype(np.float32),
+                "spacing_dhw": np.asarray(loaded.spacing_dhw, dtype=np.float32),
+            }
+            if loaded.label is not None:
+                payload["label"] = loaded.label.astype(np.int16)
+            np.savez_compressed(cache_path, **payload)
+        out.append(loaded)
+    return out
 
 
 def pad_to_shape(array: np.ndarray, shape: Sequence[int], value: Union[float, int] = 0) -> np.ndarray:
@@ -136,10 +203,87 @@ def foreground_center(label: np.ndarray, ignore_index: int, fallback_shape: Sequ
     return coords[random.randrange(len(coords))]
 
 
+def class_balanced_center(
+    label: np.ndarray,
+    ignore_index: int,
+    classes: Sequence[int],
+    fallback_shape: Sequence[int],
+) -> np.ndarray:
+    """Pick a center from a class drawn uniformly at random across `classes`.
+
+    This counters foreground sampling bias toward the most common foreground
+    class (white matter), which would otherwise starve small structures
+    (lesions, basal ganglia) in the patch stream.
+    """
+    cls = classes[random.randrange(len(classes))]
+    coords = np.argwhere(np.logical_and(label == cls, label != ignore_index))
+    if coords.size == 0:
+        return foreground_center(label, ignore_index, fallback_shape)
+    return coords[random.randrange(len(coords))]
+
+
+def _affine_grid(
+    shape_dhw: Sequence[int],
+    rotate_deg: float,
+    scale: float,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build a 5D sampling grid for a small rigid+scale augmentation.
+
+    Rotates only in the axial (H,W) plane — slice thickness in MRBrainS13 is
+    3 mm and rotating through-slice degrades labels.
+    """
+    theta = math.radians(rotate_deg)
+    cos, sin = math.cos(theta), math.sin(theta)
+    s = 1.0 / max(scale, 1e-3)
+    affine = torch.tensor(
+        [[s, 0.0, 0.0, 0.0],
+         [0.0, s * cos, -s * sin, 0.0],
+         [0.0, s * sin, s * cos, 0.0]],
+        dtype=torch.float32,
+        device=device,
+    ).unsqueeze(0)
+    grid = torch.nn.functional.affine_grid(
+        affine,
+        size=(1, 1, int(shape_dhw[0]), int(shape_dhw[1]), int(shape_dhw[2])),
+        align_corners=False,
+    )
+    return grid
+
+
+def affine_augment(
+    image: np.ndarray,
+    label: np.ndarray,
+    rotate_deg: float,
+    scale: float,
+    ignore_index: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if abs(rotate_deg) < 1e-3 and abs(scale - 1.0) < 1e-3:
+        return image, label
+    device = torch.device("cpu")
+    img_t = torch.from_numpy(image).unsqueeze(0).to(device)
+    lab_t = torch.from_numpy(label).unsqueeze(0).unsqueeze(0).float().to(device)
+    grid = _affine_grid(image.shape[-3:], rotate_deg, scale, device)
+    img_warped = torch.nn.functional.grid_sample(img_t, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+    fill = torch.full_like(lab_t, float(ignore_index))
+    lab_warped = torch.nn.functional.grid_sample(
+        lab_t,
+        grid,
+        mode="nearest",
+        padding_mode="border",
+        align_corners=False,
+    )
+    return (
+        img_warped.squeeze(0).numpy().astype(np.float32),
+        lab_warped.squeeze(0).squeeze(0).numpy().astype(np.int64),
+    )
+
+
 def augment_patch(
     image: np.ndarray,
     label: np.ndarray,
     cfg: Dict,
+    ignore_index: int = 255,
 ) -> tuple[np.ndarray, np.ndarray]:
     if not cfg.get("enabled", False):
         return image, label
@@ -151,8 +295,8 @@ def augment_patch(
             label = np.flip(label, axis=axis).copy()
 
     if random.random() < float(cfg.get("intensity_probability", 0.0)):
-        scale = random.uniform(0.9, 1.1)
-        shift = random.uniform(-0.1, 0.1)
+        scale = random.uniform(*cfg.get("intensity_scale_range", (0.9, 1.1)))
+        shift = random.uniform(*cfg.get("intensity_shift_range", (-0.1, 0.1)))
         image = image * scale + shift
         gamma_min, gamma_max = cfg.get("gamma_range", [1.0, 1.0])
         gamma = random.uniform(float(gamma_min), float(gamma_max))
@@ -164,6 +308,11 @@ def augment_patch(
         noise_std = float(cfg.get("noise_std", 0.0))
         if noise_std > 0:
             image = image + np.random.normal(0.0, noise_std, size=image.shape).astype(np.float32)
+
+    if random.random() < float(cfg.get("affine_probability", 0.0)):
+        rotate = random.uniform(*cfg.get("rotate_range_deg", (-10.0, 10.0)))
+        zoom = random.uniform(*cfg.get("scale_range", (0.9, 1.1)))
+        image, label = affine_augment(image, label, rotate, zoom, ignore_index)
 
     return image.astype(np.float32), label.astype(np.int64)
 
@@ -177,11 +326,15 @@ class PatchDataset(Dataset):
         foreground_patch_ratio: float,
         ignore_index: int,
         augmentation: Optional[Dict] = None,
+        class_balanced_classes: Optional[Sequence[int]] = None,
+        class_balanced_ratio: float = 0.0,
     ):
         self.subjects = subjects
         self.patch_size = tuple(int(v) for v in patch_size)
         self.samples_per_epoch = int(samples_per_epoch)
         self.foreground_patch_ratio = float(foreground_patch_ratio)
+        self.class_balanced_ratio = float(class_balanced_ratio)
+        self.class_balanced_classes = list(class_balanced_classes) if class_balanced_classes else []
         self.ignore_index = int(ignore_index)
         self.augmentation = augmentation or {"enabled": False}
         if any(subject.label is None for subject in subjects):
@@ -194,14 +347,19 @@ class PatchDataset(Dataset):
         subject = self.subjects[random.randrange(len(self.subjects))]
         assert subject.label is not None
         spatial = subject.image.shape[-3:]
-        if random.random() < self.foreground_patch_ratio:
+        roll = random.random()
+        if self.class_balanced_classes and roll < self.class_balanced_ratio:
+            center = class_balanced_center(
+                subject.label, self.ignore_index, self.class_balanced_classes, spatial
+            )
+        elif roll < self.class_balanced_ratio + self.foreground_patch_ratio:
             center = foreground_center(subject.label, self.ignore_index, spatial)
         else:
             center = random_center(spatial)
 
         image = extract_patch(subject.image, center, self.patch_size, pad_value=0.0)
         label = extract_patch(subject.label, center, self.patch_size, pad_value=self.ignore_index)
-        image, label = augment_patch(image, label, self.augmentation)
+        image, label = augment_patch(image, label, self.augmentation, self.ignore_index)
         return {
             "image": torch.from_numpy(image),
             "label": torch.from_numpy(label),

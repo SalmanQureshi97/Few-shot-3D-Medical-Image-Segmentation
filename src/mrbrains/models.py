@@ -5,6 +5,7 @@ from typing import Dict, List, Sequence, Union
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 
 def norm_layer(kind: str, channels: int) -> nn.Module:
@@ -20,7 +21,11 @@ def norm_layer(kind: str, channels: int) -> nn.Module:
 
 
 def match_spatial(source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Pad/crop source so its spatial shape matches target."""
+    """Pad/crop source so its spatial shape matches target.
+
+    Used to reconcile encoder skip features with the upsampled decoder feature
+    when patch shapes are not divisible by 2^levels.
+    """
     src = source.shape[-3:]
     dst = target.shape[-3:]
     if src == dst:
@@ -120,6 +125,12 @@ class AttentionGate3D(nn.Module):
         return skip * attention
 
 
+def _maybe_checkpoint(fn, x, enabled: bool):
+    if enabled and x.requires_grad:
+        return gradient_checkpoint(fn, x, use_reentrant=False)
+    return fn(x)
+
+
 class UNet3D(nn.Module):
     def __init__(
         self,
@@ -130,9 +141,11 @@ class UNet3D(nn.Module):
         norm: str = "instance",
         dropout: float = 0.0,
         deep_supervision: bool = False,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.deep_supervision = deep_supervision
+        self.gradient_checkpointing = gradient_checkpointing
         channels = [base_channels * (2**i) for i in range(levels)]
         self.encoders = nn.ModuleList()
         prev = in_channels
@@ -156,14 +169,15 @@ class UNet3D(nn.Module):
         skips: List[torch.Tensor] = []
         out = x
         for encoder in self.encoders:
-            out = encoder(out)
+            out = _maybe_checkpoint(encoder, out, self.gradient_checkpointing)
             skips.append(out)
             out = self.pool(out)
-        out = self.bottleneck(out)
+        out = _maybe_checkpoint(self.bottleneck, out, self.gradient_checkpointing)
         for up, decoder, skip in zip(self.upconvs, self.decoders, reversed(skips)):
             out = up(out)
             skip = match_spatial(skip, out)
-            out = decoder(torch.cat([out, skip], dim=1))
+            cat = torch.cat([out, skip], dim=1)
+            out = _maybe_checkpoint(decoder, cat, self.gradient_checkpointing)
         return self.head(out)
 
 
@@ -177,9 +191,11 @@ class ResidualAttentionUNet3D(nn.Module):
         norm: str = "instance",
         dropout: float = 0.1,
         deep_supervision: bool = True,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.deep_supervision = deep_supervision
+        self.gradient_checkpointing = gradient_checkpointing
         channels = [base_channels * (2**i) for i in range(levels)]
         self.encoders = nn.ModuleList()
         self.se_blocks = nn.ModuleList()
@@ -208,10 +224,11 @@ class ResidualAttentionUNet3D(nn.Module):
         skips: List[torch.Tensor] = []
         out = x
         for encoder, se in zip(self.encoders, self.se_blocks):
-            out = se(encoder(out))
+            out = _maybe_checkpoint(encoder, out, self.gradient_checkpointing)
+            out = se(out)
             skips.append(out)
             out = self.pool(out)
-        out = self.bottleneck(out)
+        out = _maybe_checkpoint(self.bottleneck, out, self.gradient_checkpointing)
 
         outputs: List[torch.Tensor] = []
         for up, attn, decoder, ds_head, skip in zip(
@@ -220,7 +237,8 @@ class ResidualAttentionUNet3D(nn.Module):
             out = up(out)
             skip = attn(match_spatial(skip, out), out)
             skip = match_spatial(skip, out)
-            out = decoder(torch.cat([out, skip], dim=1))
+            cat = torch.cat([out, skip], dim=1)
+            out = _maybe_checkpoint(decoder, cat, self.gradient_checkpointing)
             if self.deep_supervision:
                 outputs.append(ds_head(out))
         logits = self.head(out)
@@ -229,9 +247,54 @@ class ResidualAttentionUNet3D(nn.Module):
         return [logits] + outputs[:-1]
 
 
+class _SwinUNETRWrapper(nn.Module):
+    """Lazy wrapper around MONAI's SwinUNETR.
+
+    MONAI is an optional dependency: importing it only when this model is
+    requested keeps the default install slim. Installation:
+    ``pip install -r requirements-monai.txt``.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        feature_size: int = 48,
+        patch_size: Sequence[int] = (32, 96, 96),
+        use_checkpoint: bool = False,
+    ):
+        super().__init__()
+        try:
+            from monai.networks.nets import SwinUNETR  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "MONAI is required for the swin_unetr architecture. "
+                "Install with `pip install -r requirements-monai.txt`."
+            ) from exc
+        try:
+            self.net = SwinUNETR(
+                img_size=tuple(int(s) for s in patch_size),
+                in_channels=int(in_channels),
+                out_channels=int(out_channels),
+                feature_size=int(feature_size),
+                use_checkpoint=bool(use_checkpoint),
+            )
+        except TypeError:
+            # Newer MONAI dropped the `img_size` arg in favour of inferring from input.
+            self.net = SwinUNETR(
+                in_channels=int(in_channels),
+                out_channels=int(out_channels),
+                feature_size=int(feature_size),
+                use_checkpoint=bool(use_checkpoint),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 def build_model(cfg: Dict) -> nn.Module:
     name = cfg.get("name", "unet3d").lower()
-    kwargs = {
+    common = {
         "in_channels": int(cfg["in_channels"]),
         "out_channels": int(cfg["out_channels"]),
         "base_channels": int(cfg.get("base_channels", 16)),
@@ -239,9 +302,18 @@ def build_model(cfg: Dict) -> nn.Module:
         "norm": cfg.get("norm", "instance"),
         "dropout": float(cfg.get("dropout", 0.0)),
         "deep_supervision": bool(cfg.get("deep_supervision", False)),
+        "gradient_checkpointing": bool(cfg.get("gradient_checkpointing", False)),
     }
     if name == "unet3d":
-        return UNet3D(**kwargs)
+        return UNet3D(**common)
     if name in {"resattn_unet3d", "residual_attention_unet3d"}:
-        return ResidualAttentionUNet3D(**kwargs)
+        return ResidualAttentionUNet3D(**common)
+    if name in {"swin_unetr", "swinunetr"}:
+        return _SwinUNETRWrapper(
+            in_channels=common["in_channels"],
+            out_channels=common["out_channels"],
+            feature_size=int(cfg.get("feature_size", 48)),
+            patch_size=cfg.get("patch_size", (32, 96, 96)),
+            use_checkpoint=common["gradient_checkpointing"],
+        )
     raise ValueError(f"Unknown model name: {name}")

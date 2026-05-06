@@ -1,0 +1,62 @@
+# Smoke config: tiny patches, ~6 epochs, intended for the synthetic dataset
+# created by scripts/create_synthetic_mrbrains.py. Used to validate the
+# end-to-end pipeline runs without GPU.
+experiment:
+  name: smoke
+  seed: 0
+  out_dir: runs/smoke
+
+data:
+  modalities: [t1, ir, flair]
+  target: coarse
+  num_classes: 4
+  ignore_index: 255
+  ignore_hindbrain_in_coarse: true
+  cache_subjects: false
+  intensity_clip_percentiles: [1.0, 99.0]
+
+model:
+  name: unet3d
+  in_channels: 3
+  out_channels: 4
+  base_channels: 8
+  levels: 3
+  norm: instance
+  dropout: 0.0
+  deep_supervision: false
+
+training:
+  epochs: 6
+  batch_size: 1
+  samples_per_epoch: 16
+  patch_size: [16, 48, 48]
+  foreground_patch_ratio: 0.7
+  lr: 0.001
+  weight_decay: 0.0
+  loss: dice_ce
+  dice_weight: 0.5
+  ce_weight: 0.5
+  amp: false
+  num_workers: 0
+  val_interval: 2
+  save_every: 0
+  scheduler: cosine
+  grad_clip: 1.0
+  ema_decay: 0.0
+  overlay_every: 0
+
+augmentation:
+  enabled: true
+  flip_probability: 0.5
+  intensity_probability: 0.5
+  noise_std: 0.0
+  gamma_range: [0.9, 1.1]
+  affine_probability: 0.0
+
+inference:
+  roi_size: [16, 48, 48]
+  sw_batch_size: 1
+  overlap: 0.5
+  tta_flips: []
+  gaussian_sigma_scale: 0.125
+  amp: false

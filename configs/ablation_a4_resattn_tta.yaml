@@ -1,10 +1,10 @@
-# A3 (headline improved method): A2 + Residual-Attention 3D U-Net with
-# squeeze-excitation skips, attention gates, and deep supervision. This is
-# the model the report compares against the A0 baseline.
+# A4: A3 with test-time augmentation (3 flip variants) at inference.
+# Inference-time technique only — no training-time changes vs. A3 — so it
+# isolates the gain from TTA.
 experiment:
-  name: improved_resattn_unet3d
+  name: ablation_a4_resattn_tta
   seed: 29
-  out_dir: runs/improved_resattn_unet3d
+  out_dir: runs/ablation_a4_resattn_tta
 
 data:
   modalities: [t1, ir, flair]
@@ -41,7 +41,6 @@ training:
   ce_weight: 0.35
   focal_gamma: 2.0
   class_weights: auto
-  boundary_weight: 0.0
   deep_supervision_weights: [1.0, 0.5, 0.25, 0.125]
   amp: true
   num_workers: 4
@@ -52,7 +51,7 @@ training:
   grad_clip: 1.0
   ema_decay: 0.999
   early_stop_patience: 0
-  overlay_every: 10
+  overlay_every: 25
 
 augmentation:
   enabled: true
@@ -70,6 +69,6 @@ inference:
   roi_size: [32, 96, 96]
   sw_batch_size: 2
   overlap: 0.5
-  tta_flips: []
+  tta_flips: [[3], [2], [2, 3]]
   gaussian_sigma_scale: 0.125
   amp: true

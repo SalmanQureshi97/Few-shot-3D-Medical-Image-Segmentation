@@ -1,10 +1,12 @@
-# A3 (headline improved method): A2 + Residual-Attention 3D U-Net with
-# squeeze-excitation skips, attention gates, and deep supervision. This is
-# the model the report compares against the A0 baseline.
+# A5 (optional, MONAI required): SwinUNETR transformer baseline used for
+# the literature-comparison row. Install MONAI first:
+#   pip install -r requirements-monai.txt
+# Otherwise the model factory will raise ImportError when this config is
+# selected.
 experiment:
-  name: improved_resattn_unet3d
+  name: ablation_a5_swin_unetr
   seed: 29
-  out_dir: runs/improved_resattn_unet3d
+  out_dir: runs/ablation_a5_swin_unetr
 
 data:
   modalities: [t1, ir, flair]
@@ -16,43 +18,39 @@ data:
   intensity_clip_percentiles: [0.5, 99.5]
 
 model:
-  name: resattn_unet3d
+  name: swin_unetr
   in_channels: 3
   out_channels: 4
-  base_channels: 24
-  levels: 4
-  norm: instance
-  dropout: 0.1
-  deep_supervision: true
-  gradient_checkpointing: false
+  feature_size: 48
+  patch_size: [32, 96, 96]
+  deep_supervision: false
+  gradient_checkpointing: true
 
 training:
-  epochs: 250
-  batch_size: 2
-  samples_per_epoch: 768
+  epochs: 220
+  batch_size: 1
+  samples_per_epoch: 512
   patch_size: [32, 96, 96]
   foreground_patch_ratio: 0.8
   class_balanced_ratio: 0.15
   class_balanced_classes: [1, 2, 3]
-  lr: 0.00025
-  weight_decay: 0.0002
+  lr: 0.0002
+  weight_decay: 0.00005
   loss: dice_ce
-  dice_weight: 0.65
-  ce_weight: 0.35
-  focal_gamma: 2.0
+  dice_weight: 0.6
+  ce_weight: 0.4
+  focal_gamma: 0.0
   class_weights: auto
-  boundary_weight: 0.0
-  deep_supervision_weights: [1.0, 0.5, 0.25, 0.125]
   amp: true
   num_workers: 4
   val_interval: 5
   save_every: 0
   scheduler: cosine_warmup
-  warmup_epochs: 12
+  warmup_epochs: 15
   grad_clip: 1.0
   ema_decay: 0.999
   early_stop_patience: 0
-  overlay_every: 10
+  overlay_every: 25
 
 augmentation:
   enabled: true
@@ -70,6 +68,6 @@ inference:
   roi_size: [32, 96, 96]
   sw_batch_size: 2
   overlap: 0.5
-  tta_flips: []
+  tta_flips: [[3], [2]]
   gaussian_sigma_scale: 0.125
   amp: true

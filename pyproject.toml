@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mrbrains"
+name = "mrbrains13-fewshot"
 version = "0.1.0"
-description = "MRBrainS13 few-shot 3D segmentation pipeline"
+description = "Few-shot 3D brain tissue segmentation pipeline for MRBrainS13."
 requires-python = ">=3.9"
 dependencies = [
   "torch>=2.1",
@@ -20,6 +20,9 @@ dependencies = [
   "tensorboard>=2.12",
 ]
 
+[project.optional-dependencies]
+monai = ["monai>=1.3", "einops>=0.6"]
+dev = ["pytest>=8.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
-

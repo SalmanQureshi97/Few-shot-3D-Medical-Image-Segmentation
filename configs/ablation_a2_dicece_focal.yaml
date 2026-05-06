@@ -1,10 +1,9 @@
-# A3 (headline improved method): A2 + Residual-Attention 3D U-Net with
-# squeeze-excitation skips, attention gates, and deep supervision. This is
-# the model the report compares against the A0 baseline.
+# A2: A1 + DiceCE loss with frequency-balanced class weights and focal CE.
+# Targets the class-imbalance question (small structures vs. WM dominance).
 experiment:
-  name: improved_resattn_unet3d
-  seed: 29
-  out_dir: runs/improved_resattn_unet3d
+  name: ablation_a2_dicece_focal
+  seed: 13
+  out_dir: runs/ablation_a2_dicece_focal
 
 data:
   modalities: [t1, ir, flair]
@@ -16,39 +15,37 @@ data:
   intensity_clip_percentiles: [0.5, 99.5]
 
 model:
-  name: resattn_unet3d
+  name: unet3d
   in_channels: 3
   out_channels: 4
-  base_channels: 24
+  base_channels: 16
   levels: 4
   norm: instance
   dropout: 0.1
-  deep_supervision: true
+  deep_supervision: false
   gradient_checkpointing: false
 
 training:
-  epochs: 250
+  epochs: 200
   batch_size: 2
-  samples_per_epoch: 768
+  samples_per_epoch: 640
   patch_size: [32, 96, 96]
   foreground_patch_ratio: 0.8
   class_balanced_ratio: 0.15
   class_balanced_classes: [1, 2, 3]
-  lr: 0.00025
-  weight_decay: 0.0002
+  lr: 0.0003
+  weight_decay: 0.0001
   loss: dice_ce
-  dice_weight: 0.65
-  ce_weight: 0.35
+  dice_weight: 0.6
+  ce_weight: 0.4
   focal_gamma: 2.0
   class_weights: auto
-  boundary_weight: 0.0
-  deep_supervision_weights: [1.0, 0.5, 0.25, 0.125]
   amp: true
   num_workers: 4
   val_interval: 5
   save_every: 0
   scheduler: cosine_warmup
-  warmup_epochs: 12
+  warmup_epochs: 10
   grad_clip: 1.0
   ema_decay: 0.999
   early_stop_patience: 0

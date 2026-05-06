@@ -1,1 +1,42 @@
+# Datasets and predictions are never committed.
 /data
+/predictions
+/runs
+/artifacts
+/report
+
+# Cached preprocessed volumes and any stray NIfTI / npz / npy files outside data/.
+*.nii
+*.nii.gz
+*.npz
+*.npy
+
+# Model checkpoints.
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Python.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS.
+.DS_Store
+Thumbs.db
+
+# Editor.
+.idea/
+.vscode/
+
+# Tooling state.
+.claude/

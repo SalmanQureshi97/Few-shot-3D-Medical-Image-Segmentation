@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Sequence
 
 import numpy as np
 
@@ -24,11 +24,15 @@ COARSE_LABELS: Dict[int, str] = {
     3: "white_matter",
 }
 
-COARSE_TO_DETAILED = {
+# MRBrainS13 official 3-class evaluation pools detailed labels into CSF / GM / WM.
+COARSE_TO_DETAILED: Dict[int, List[int]] = {
     1: [5, 6],
     2: [1, 2],
     3: [3, 4],
 }
+
+# Hindbrain (cerebellum + brainstem) is excluded from the official MRBrainS13 leaderboard.
+HINDBRAIN_DETAILED = [7, 8]
 
 
 def label_names(target: str) -> Dict[int, str]:
@@ -56,10 +60,10 @@ def map_detailed_to_coarse(
     ignore_index: int = 255,
     ignore_hindbrain: bool = True,
 ) -> np.ndarray:
-    """Map MRBrainS detailed labels to background/CSF/GM/WM.
+    """Map MRBrainS13 detailed labels to background/CSF/GM/WM.
 
-    The official MRBrainS13 test task evaluates CSF, GM and WM. Cerebellum and
-    brainstem are excluded by the challenge; using ignore labels during coarse
+    The official MRBrainS13 test task evaluates CSF, GM and WM only. Cerebellum and
+    brainstem are excluded by the challenge; using the ignore index during coarse
     training keeps the loss from forcing those voxels into an arbitrary tissue.
     """
     labels = labels.astype(np.int16, copy=False)
@@ -68,7 +72,7 @@ def map_detailed_to_coarse(
     mapped[np.isin(labels, COARSE_TO_DETAILED[2])] = 2
     mapped[np.isin(labels, COARSE_TO_DETAILED[3])] = 3
     if ignore_hindbrain:
-        mapped[np.isin(labels, [7, 8])] = ignore_index
+        mapped[np.isin(labels, HINDBRAIN_DETAILED)] = ignore_index
     return mapped
 
 
@@ -77,9 +81,13 @@ def remap_labels(
     target: str,
     ignore_index: int = 255,
     ignore_hindbrain_in_coarse: bool = True,
+    ignore_hindbrain_in_detailed: bool = False,
 ) -> np.ndarray:
     if target == "detailed":
-        return labels.astype(np.int64)
+        out = labels.astype(np.int64)
+        if ignore_hindbrain_in_detailed:
+            out = np.where(np.isin(out, HINDBRAIN_DETAILED), ignore_index, out)
+        return out
     if target == "coarse":
         return map_detailed_to_coarse(labels, ignore_index, ignore_hindbrain_in_coarse)
     raise ValueError(f"Unknown target: {target}")
@@ -89,3 +97,42 @@ def class_counts(labels: np.ndarray, classes: Iterable[int], ignore_index: int =
     valid = labels != ignore_index
     return {int(c): int(np.logical_and(labels == c, valid).sum()) for c in classes}
 
+
+def class_voxel_frequencies(
+    label_volumes: Sequence[np.ndarray],
+    num_classes: int,
+    ignore_index: int = 255,
+) -> np.ndarray:
+    """Voxel frequency per class across a list of label volumes.
+
+    Returns a length-`num_classes` array summing to ~1.0 (the ignore index is
+    excluded from the denominator).
+    """
+    counts = np.zeros(num_classes, dtype=np.float64)
+    for label in label_volumes:
+        valid = label != ignore_index
+        flat = label[valid]
+        bins = np.bincount(flat.astype(np.int64), minlength=num_classes)
+        counts[: len(bins)] += bins[:num_classes]
+    total = counts.sum()
+    if total <= 0:
+        return np.full(num_classes, 1.0 / num_classes, dtype=np.float64)
+    return counts / total
+
+
+def inverse_frequency_weights(
+    frequencies: np.ndarray,
+    smoothing: float = 1e-3,
+    background_weight: float = 0.1,
+) -> np.ndarray:
+    """Inverse-frequency class weights for cross-entropy / weighted Dice.
+
+    A small additive smoothing prevents divide-by-zero on absent classes; the
+    background weight is downweighted explicitly because it dominates volume.
+    """
+    freq = np.maximum(frequencies, smoothing)
+    weights = 1.0 / freq
+    weights = weights / weights.mean()
+    if len(weights) > 0:
+        weights[0] = float(background_weight)
+    return weights.astype(np.float32)
