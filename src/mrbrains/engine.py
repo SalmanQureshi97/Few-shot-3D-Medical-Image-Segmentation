@@ -126,6 +126,11 @@ class _EMA:
             if not torch.is_floating_point(param):
                 self.shadow[name] = param.detach().clone()
                 continue
+            # If the live model briefly contains NaN/Inf (e.g. AMP overflow on
+            # a residual-attention forward), refuse to mix that into the EMA
+            # shadow — otherwise the validation copy stays NaN forever.
+            if not torch.isfinite(param).all():
+                continue
             self.shadow[name].mul_(self.decay).add_(param.detach(), alpha=1.0 - self.decay)
 
     def state_dict(self) -> Dict[str, torch.Tensor]:
@@ -197,6 +202,15 @@ def _peak_memory_mb(device: torch.device) -> float:
     return float(torch.cuda.max_memory_allocated(device)) / (1024**2)
 
 
+def _has_nonfinite_grads(model: torch.nn.Module) -> bool:
+    for p in model.parameters():
+        if p.grad is None:
+            continue
+        if not torch.isfinite(p.grad).all():
+            return True
+    return False
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -211,6 +225,9 @@ def train_one_epoch(
 ) -> float:
     model.train()
     total_loss = 0.0
+    n_steps = 0
+    n_skipped_loss = 0
+    n_skipped_grad = 0
     use_amp = amp and device.type == "cuda"
     progress = tqdm(loader, desc=f"epoch {epoch}", leave=False)
     for batch in progress:
@@ -220,17 +237,40 @@ def train_one_epoch(
         with _amp_context(use_amp, device):
             outputs = model(image)
             loss = criterion(outputs, label)
+        # Skip iteration entirely if the forward produced NaN/Inf — this
+        # prevents one bad patch (e.g. all-ignore, or AMP overflow on a
+        # near-constant volume) from poisoning the model.
+        if not torch.isfinite(loss):
+            n_skipped_loss += 1
+            progress.set_postfix(loss="nan-skip")
+            continue
         scaler.scale(loss).backward()
-        if grad_clip and grad_clip > 0:
+        # Unscale before checking gradients so AMP scaling is removed first.
+        if scaler.is_enabled():
             scaler.unscale_(optimizer)
+        if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+        if _has_nonfinite_grads(model):
+            # GradScaler also detects this and refuses the step, but on CPU
+            # or when AMP is off we still need to bail out manually.
+            n_skipped_grad += 1
+            optimizer.zero_grad(set_to_none=True)
+            scaler.update()
+            progress.set_postfix(loss=f"{loss.item():.4f} grad-skip")
+            continue
         scaler.step(optimizer)
         scaler.update()
         if ema is not None:
             ema.update(model)
         total_loss += float(loss.item())
+        n_steps += 1
         progress.set_postfix(loss=f"{loss.item():.4f}")
-    return total_loss / max(1, len(loader))
+    if n_skipped_loss or n_skipped_grad:
+        progress.write(
+            f"epoch {epoch}: skipped {n_skipped_loss} non-finite-loss and "
+            f"{n_skipped_grad} non-finite-grad iterations"
+        )
+    return total_loss / max(1, n_steps)
 
 
 def validate(

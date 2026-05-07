@@ -49,7 +49,10 @@ class DiceLoss(nn.Module):
         self._class_weights_cfg = list(class_weights) if class_weights is not None else None
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        probs = torch.softmax(logits, dim=1)
+        # Cast logits to FP32 before softmax. Under AMP the encoder output is
+        # FP16 and a near-constant patch can produce values large enough to
+        # overflow softmax, returning NaN probabilities and a NaN loss.
+        probs = torch.softmax(logits.float(), dim=1)
         target_oh, valid = one_hot(target, self.num_classes, self.ignore_index)
         probs = probs * valid
         target_oh = target_oh * valid
@@ -88,7 +91,7 @@ class TverskyLoss(nn.Module):
         self._class_weights_cfg = list(class_weights) if class_weights is not None else None
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        probs = torch.softmax(logits, dim=1)
+        probs = torch.softmax(logits.float(), dim=1)
         target_oh, valid = one_hot(target, self.num_classes, self.ignore_index)
         probs = probs * valid
         target_oh = target_oh * valid
@@ -125,7 +128,7 @@ class FocalLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         weight = _as_class_weights(self._class_weights_cfg, self.num_classes, logits.device)
-        log_probs = F.log_softmax(logits, dim=1)
+        log_probs = F.log_softmax(logits.float(), dim=1)
         nll = F.nll_loss(log_probs, target, weight=weight, ignore_index=self.ignore_index, reduction="none")
         with torch.no_grad():
             valid = target != self.ignore_index
