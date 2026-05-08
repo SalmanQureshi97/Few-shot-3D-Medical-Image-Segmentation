@@ -413,7 +413,7 @@ def run_training(
     model = build_model(cfg["model"]).to(device)
     criterion = build_loss(
         cfg["training"], int(cfg["data"]["num_classes"]), int(cfg["data"].get("ignore_index", 255))
-    )
+    ).to(device)  # ensure CE weight buffers follow the model device
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg["training"]["lr"]),
