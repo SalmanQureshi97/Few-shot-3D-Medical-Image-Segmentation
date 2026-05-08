@@ -1,5 +1,6 @@
-# Datasets and predictions are never committed.
+# Datasets and reports are never committed.
 /data
+/report
 
 # Cached preprocessed volumes and any stray NIfTI / npz / npy files outside data/.
 *.nii
