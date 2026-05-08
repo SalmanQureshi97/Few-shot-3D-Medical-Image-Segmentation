@@ -1,0 +1,6 @@
+subject_id,label,t1,ir,flair
+1,data/TrainingData/1/LabelsForTraining.nii,data/TrainingData/1/T1.nii,data/TrainingData/1/T1_IR.nii,data/TrainingData/1/T2_FLAIR.nii
+2,data/TrainingData/2/LabelsForTraining.nii,data/TrainingData/2/T1.nii,data/TrainingData/2/T1_IR.nii,data/TrainingData/2/T2_FLAIR.nii
+3,data/TrainingData/3/LabelsForTraining.nii,data/TrainingData/3/T1.nii,data/TrainingData/3/T1_IR.nii,data/TrainingData/3/T2_FLAIR.nii
+4,data/TrainingData/4/LabelsForTraining.nii,data/TrainingData/4/T1.nii,data/TrainingData/4/T1_IR.nii,data/TrainingData/4/T2_FLAIR.nii
+5,data/TrainingData/5/LabelsForTraining.nii,data/TrainingData/5/T1.nii,data/TrainingData/5/T1_IR.nii,data/TrainingData/5/T2_FLAIR.nii

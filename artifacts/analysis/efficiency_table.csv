@@ -1,0 +1,7 @@
+config,model,params,params_M,median_inference_s,min_inference_s,peak_memory_mb,shape_dhw
+baseline_unet3d,unet3d,5647300,5.65,0.097,0.097,369.5,48x240x240
+ablation_a1_fg_aug,unet3d,5647300,5.65,0.097,0.097,369.9,48x240x240
+ablation_a2_dicece_focal,unet3d,5647300,5.65,0.097,0.097,369.9,48x240x240
+improved_resattn_unet3d,resattn_unet3d,12962169,12.96,0.156,0.156,482.3,48x240x240
+ablation_a4_resattn_tta,resattn_unet3d,12962169,12.96,0.157,0.157,482.3,48x240x240
+detailed_resattn_unet3d,resattn_unet3d,12964114,12.96,0.2,0.198,547.2,48x240x240

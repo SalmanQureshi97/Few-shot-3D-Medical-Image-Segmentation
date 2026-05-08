@@ -1,0 +1,5 @@
+class_id,name,voxel_fraction,loss_weight
+0,background,0.830173,0.100000
+1,csf,0.054777,1.313557
+2,gray_matter,0.068704,1.047278
+3,white_matter,0.046346,1.552494

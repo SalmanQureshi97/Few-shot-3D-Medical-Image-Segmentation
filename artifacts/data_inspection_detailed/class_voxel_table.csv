@@ -1,0 +1,10 @@
+class_id,name,voxel_fraction,loss_weight
+0,background,0.814876,0.100000
+1,cortical_gray_matter,0.063581,0.074061
+2,basal_ganglia,0.003857,1.220767
+3,white_matter,0.044535,0.105733
+4,white_matter_lesions,0.000957,4.708837
+5,extracerebral_csf,0.049095,0.095912
+6,ventricles,0.004672,1.007896
+7,cerebellum,0.015227,0.309246
+8,brainstem,0.003199,1.471771

@@ -1,0 +1,99 @@
+experiment:
+  name: improved_resattn_unet3d
+  seed: 29
+  out_dir: runs/improved_resattn_unet3d
+data:
+  modalities:
+  - t1
+  - ir
+  - flair
+  target: coarse
+  num_classes: 4
+  ignore_index: 255
+  ignore_hindbrain_in_coarse: true
+  cache_subjects: true
+  intensity_clip_percentiles:
+  - 0.5
+  - 99.5
+model:
+  name: resattn_unet3d
+  in_channels: 3
+  out_channels: 4
+  base_channels: 24
+  levels: 4
+  norm: instance
+  dropout: 0.1
+  deep_supervision: true
+  gradient_checkpointing: false
+training:
+  epochs: 250
+  batch_size: 2
+  samples_per_epoch: 768
+  patch_size:
+  - 32
+  - 96
+  - 96
+  foreground_patch_ratio: 0.8
+  class_balanced_ratio: 0.15
+  class_balanced_classes:
+  - 1
+  - 2
+  - 3
+  lr: 0.00025
+  weight_decay: 0.0002
+  loss: dice_ce
+  dice_weight: 0.65
+  ce_weight: 0.35
+  focal_gamma: 2.0
+  class_weights: auto
+  boundary_weight: 0.0
+  deep_supervision_weights:
+  - 1.0
+  - 0.5
+  - 0.25
+  - 0.125
+  amp: true
+  num_workers: 4
+  val_interval: 5
+  save_every: 0
+  scheduler: cosine_warmup
+  warmup_epochs: 12
+  grad_clip: 1.0
+  ema_decay: 0.999
+  early_stop_patience: 0
+  overlay_every: 10
+augmentation:
+  enabled: true
+  flip_probability: 0.5
+  intensity_probability: 0.8
+  intensity_scale_range:
+  - 0.9
+  - 1.1
+  intensity_shift_range:
+  - -0.1
+  - 0.1
+  noise_std: 0.03
+  gamma_range:
+  - 0.75
+  - 1.35
+  affine_probability: 0.5
+  rotate_range_deg:
+  - -10.0
+  - 10.0
+  scale_range:
+  - 0.9
+  - 1.1
+inference:
+  roi_size:
+  - 32
+  - 96
+  - 96
+  sw_batch_size: 2
+  overlap: 0.5
+  tta_flips:
+  - - 3
+  - - 2
+  - - 2
+    - 3
+  gaussian_sigma_scale: 0.125
+  amp: true

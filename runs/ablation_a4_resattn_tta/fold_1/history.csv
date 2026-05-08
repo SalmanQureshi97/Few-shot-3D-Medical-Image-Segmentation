@@ -1,0 +1,2 @@
+epoch,train_loss,lr,parameters,epoch_seconds,peak_memory_mb,val_dice_mean,val_avd_mean,val_hd95_mean
+0,,,,,,0.6666537794513583,69.61908216785487,48.49246486028036
