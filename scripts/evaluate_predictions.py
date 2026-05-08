@@ -47,7 +47,15 @@ def main() -> None:
         pred_dhw = to_dhw(pred_xyz).astype(np.int64)
         label_xyz, label_meta = load_volume(subject.label_path)
         label_dhw = to_dhw(label_xyz).astype(np.int64)
-        label_remapped = remap_labels(label_dhw, args.target, args.ignore_index, args.ignore_hindbrain)
+        # MRBrainS LabelsForTesting.nii is already in 4-class coarse space
+        # (0=bg, 1=CSF, 2=GM, 3=WM). Re-applying remap_labels(target="coarse")
+        # would mistake value 1 (CSF) for detailed cortical GM and silently
+        # corrupt the ground truth. Skip the remap in that case.
+        already_coarse = "labelsfortesting" in subject.label_path.name.lower() and args.target == "coarse"
+        if already_coarse:
+            label_remapped = label_dhw
+        else:
+            label_remapped = remap_labels(label_dhw, args.target, args.ignore_index, args.ignore_hindbrain)
         spacing_xyz = label_meta.spacing
         spacing_dhw = (spacing_xyz[2], spacing_xyz[1], spacing_xyz[0])
         row = {"subject_id": subject.subject_id}

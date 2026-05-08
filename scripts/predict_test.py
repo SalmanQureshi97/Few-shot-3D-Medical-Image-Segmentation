@@ -123,15 +123,24 @@ def main() -> None:
 
             label_xyz, _ = load_volume(subject.label_path)
             label_dhw = to_dhw(label_xyz).astype(np.int64)
-            # MRBrainS LabelsForTesting are already in coarse class space (0..3),
-            # so the remap is a passthrough; for the detailed task we still remap.
-            label_remapped = remap_labels(
-                label_dhw,
-                cfg["data"]["target"],
-                ignore_index,
-                bool(cfg["data"].get("ignore_hindbrain_in_coarse", True)),
-                bool(cfg["data"].get("ignore_hindbrain_in_detailed", False)),
-            )
+            # MRBrainS LabelsForTesting.nii is shipped already in 4-class coarse
+            # space (0=bg, 1=CSF, 2=GM, 3=WM). Do NOT re-apply the detailed->coarse
+            # mapping in that case — it would treat value 1 as cortical GM and
+            # silently relabel CSF -> GM. We only remap when the file is the
+            # 8-class LabelsForTraining.nii (training-time eval) or when the
+            # config asks for the detailed task.
+            label_name = subject.label_path.name.lower()
+            already_coarse = "labelsfortesting" in label_name and cfg["data"]["target"] == "coarse"
+            if already_coarse:
+                label_remapped = label_dhw
+            else:
+                label_remapped = remap_labels(
+                    label_dhw,
+                    cfg["data"]["target"],
+                    ignore_index,
+                    bool(cfg["data"].get("ignore_hindbrain_in_coarse", True)),
+                    bool(cfg["data"].get("ignore_hindbrain_in_detailed", False)),
+                )
             row = {"subject_id": subject.subject_id}
             row.update(
                 summarise_metric_dict(

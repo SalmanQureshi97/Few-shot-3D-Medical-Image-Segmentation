@@ -47,6 +47,21 @@ def test_class_voxel_frequencies_sums_to_one():
     assert freqs[0] == 1 / 6 and freqs[2] == 3 / 6
 
 
+def test_map_detailed_to_coarse_does_not_handle_already_coarse_labels():
+    """LabelsForTesting.nii ships in coarse space (0=bg, 1=CSF, 2=GM, 3=WM).
+
+    map_detailed_to_coarse is meant for the 8-class LabelsForTraining.nii. If a
+    caller mistakenly applies it to LabelsForTesting, value 1 (CSF) collides with
+    detailed class 1 (cortical GM) and gets relabelled to coarse 2 (GM). This
+    test pins that behaviour so any future caller knows to skip the remap.
+    """
+    coarse_input = np.array([0, 1, 2, 3])  # already coarse
+    out = map_detailed_to_coarse(coarse_input)
+    # If the function ever gains the ability to detect already-coarse input,
+    # update this test together with all callers.
+    assert out.tolist() == [0, 2, 2, 3]
+
+
 def test_inverse_frequency_weights_downweights_background():
     freqs = np.array([0.9, 0.05, 0.04, 0.01])
     weights = inverse_frequency_weights(freqs, background_weight=0.1)
