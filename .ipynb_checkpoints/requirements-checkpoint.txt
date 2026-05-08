@@ -1,0 +1,11 @@
+torch>=2.1
+numpy>=1.22
+scipy>=1.10
+pandas>=2.0
+matplotlib>=3.7
+seaborn>=0.13
+tqdm>=4.65
+PyYAML>=6.0
+nibabel>=5.0
+tensorboard>=2.12
+

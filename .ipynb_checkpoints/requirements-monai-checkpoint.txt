@@ -1,0 +1,4 @@
+# Optional dependencies for the SwinUNETR comparison config (configs/ablation_a5_swin_unetr.yaml).
+-r requirements.txt
+monai>=1.3
+einops>=0.6
