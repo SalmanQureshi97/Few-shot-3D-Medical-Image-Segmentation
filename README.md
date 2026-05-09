@@ -1,6 +1,6 @@
 # Few-Shot 3D Brain Tissue Segmentation on MRBrainS13
 
-A research pipeline for brain tissue segmentation on the [MRBrainS13](https://mrbrains13.isi.uu.nl/data/index.html) dataset (5 training subjects, 15 test subjects, 1.5 T multi-modal MRI). The repo provides a reference 3D U-Net baseline plus a residual-attention 3D U-Net with deep supervision, foreground- and class-balanced patch sampling, frequency-weighted Dice + (focal) cross-entropy, EMA, mixed precision, and sliding-window inference with optional test-time augmentation.
+A research pipeline for brain tissue segmentation on the [MRBrainS13](https://mrbrains13.isi.uu.nl/data/index.html) dataset (5 training subjects, 15 test subjects, 1.5 T multi-modal MRI). The repo provides a reference 3D U-Net baseline plus a residual-attention 3D U-Net with deep supervision, foreground and class-balanced patch sampling, frequency-weighted Dice + (focal) cross-entropy, EMA, mixed precision, and sliding-window inference with optional test-time augmentation.
 
 It is structured for **few-shot evaluation under memory constraints** and for **ablation-driven analysis** rather than a single best number.
 
